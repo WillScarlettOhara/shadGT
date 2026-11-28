@@ -4730,6 +4730,7 @@ void NativeRenderer::PassBarrier(std::source_location where) {
 }
 
 static VAddr InplaceFrom();
+static void NoteGpuWrite(u64 frame, VAddr address, u64 size); // PERF-SGT-247
 
 // FIX-GTS-528: in a fresh GT Sport game (no save data yet), a small picture in the memory the CPU
 // reads (0xf0'0000'0000 and up, the game's own heap) goes back in this submission, before the
@@ -5291,6 +5292,7 @@ void NativeRenderer::FlushWritebacks() {
         const VAddr address = entry->info.guest_address;
         const u64 size = entry->info.guest_size;
         SnapshotLease::MarkUnsafe(address, size, 16);
+        NoteGpuWrite(frame, address, size); // PERF-SGT-247
         if (overlaps(deferred_ranges, address, size)) {
             flush_deferred();
         } else if (use_batch && overlaps(batch_ranges, address, size)) {
@@ -7031,6 +7033,7 @@ void NativeRenderer::RecordRegionWriteback(const std::shared_ptr<WritebackPlan>&
         for (; i < end; ++i) {
             const auto& page = plan.parts[i];
             SnapshotLease::MarkUnsafe(page.page, 4096, 16);
+            NoteGpuWrite(frame, page.page, 4096); // PERF-SGT-247
             auto found = regions.find(page.region_begin);
             if (found == regions.end() || found->second.buffer.get() != page.region_buffer)
                 UNREACHABLE_MSG("native writeback region changed after preflight");
@@ -9118,12 +9121,72 @@ static bool MirrorOutsideCpuStacks(VAddr begin, VAddr end) {
     return query.Allowed(begin, end);
 }
 
+// PERF-SGT-247: GT7's compute shaders read the first kilobyte of 8-9 buffers in its per-frame
+// memory (0x200000000-0x208600000) ~35-41 million times a frame (Tokyo replay, broadcast cameras),
+// each read through the page table and over PCIe from guest memory; ~150 KB of distinct data. The
+// PERF-GTS-461 prefix snapshot (the first 4 KB copied into the list's upload memory when the
+// dispatch is recorded) takes ~90-95% of those reads off the bus, but GT7 had it off in races:
+// such a buffer may hold what the GPU wrote. Here a prefix is snapshotted only when no GPU work
+// bound or wrote that memory in the last four frames (write binds, direct writes, write-backs).
+// Frame time in the heavy first minute -5.7%; 0 mismatches in ~22,000 snapshots compared with
+// what the dispatch read in place (harness verify mode). SHADGT_COMPUTE_PREFIX_SNAPSHOT=0: off;
+// 1: on in every game; unset: on in GT7.
+static bool ComputePrefixSnapshotOn() {
+    static const bool on = [] {
+        const char* env = std::getenv("SHADGT_COMPUTE_PREFIX_SNAPSHOT");
+        if (env && env[0] == '0' && env[1] == ' ') return false;
+        if (env && env[0] == '1' && env[1] == ' ') return true;
+        return Common::IsGt7();
+    }();
+    return on;
+}
+namespace {
+// By 16 KiB page, the last frame GPU work wrote it; writes over 16 MiB are kept as ranges.
+std::mutex gpu_writes_mutex;
+std::unordered_map<u64, u64> gpu_write_pages;
+std::vector<std::tuple<u64, VAddr, VAddr>> gpu_write_ranges;
+u64 gpu_writes_pruned = 0, gpu_pages_pruned = 0;
+} // namespace
+static void NoteGpuWrite(u64 frame, VAddr address, u64 size) { // PERF-SGT-247
+    if (!ComputePrefixSnapshotOn() || size == 0) return;
+    std::scoped_lock lock{gpu_writes_mutex};
+    if (frame != gpu_writes_pruned) { // drop what is older than four frames
+        if (frame >= gpu_pages_pruned + 64 || frame < gpu_pages_pruned) { // the pages now and then
+            gpu_pages_pruned = frame;
+            std::erase_if(gpu_write_pages, [&](const auto& p) { return p.second + 4 < frame; });
+        }
+        gpu_writes_pruned = frame;
+        std::erase_if(gpu_write_ranges, [&](const auto& w) { return std::get<0>(w) + 4 < frame; });
+    }
+    if (size > 16_MB) {
+        gpu_write_ranges.emplace_back(frame, address, address + size);
+        return;
+    }
+    for (u64 page = address >> 14; page <= (address + size - 1) >> 14; ++page) {
+        gpu_write_pages[page] = frame;
+    }
+}
+static bool GpuWroteLately(u64 frame, VAddr address, u64 size) { // PERF-SGT-247
+    std::scoped_lock lock{gpu_writes_mutex};
+    for (u64 page = address >> 14; page <= (address + size - 1) >> 14; ++page) {
+        const auto it = gpu_write_pages.find(page);
+        if (it != gpu_write_pages.end() && it->second + 4 >= frame) return true;
+    }
+    return std::ranges::any_of(gpu_write_ranges, [&](const auto& w) {
+        return std::get<0>(w) + 4 >= frame && std::get<1>(w) < address + size &&
+               address < std::get<2>(w);
+    });
+}
+
 std::optional<std::pair<vk::Buffer, u64>> NativeRenderer::GuestBuffer(VAddr address, u64 size,
                                                                       bool write, bool mirror) {
     if (size == 0) {
         return std::nullopt;
     }
-    if (write) SnapshotLease::MarkUnsafe(address, size, 16);
+    if (write) {
+        SnapshotLease::MarkUnsafe(address, size, 16);
+        NoteGpuWrite(frame, address, size); // PERF-SGT-247
+    }
     PhaseClock guest_clock{stats.guest_buffer_ns}; // NAT-145
     NATIVE_DIAGNOSTIC(++stats.guest_buffer_calls);
     Ctx().last_mirror = nullptr; // OPT-004
@@ -9327,7 +9390,10 @@ static VAddr NativeInplaceFrom() {
 std::optional<std::pair<vk::Buffer, u64>> NativeRenderer::GuestBufferLookup(VAddr address, u64 size,
                                                                             bool write,
                                                                             bool mirror) {
-    if (write) SnapshotLease::MarkUnsafe(address, size, 16);
+    if (write) {
+        SnapshotLease::MarkUnsafe(address, size, 16);
+        NoteGpuWrite(frame, address, size); // PERF-SGT-247
+    }
     // PERF-GTS-365: a gather from before this write is stale where it overlaps it. Only those are
     // dropped: clearing them all at every written binding made the list gather again and again.
     // The scan starts the largest gather's size below the write: nothing starting earlier reaches it.
@@ -12489,11 +12555,18 @@ void NativeRenderer::BindBuffers(const Shader::Info& stage, const AmdGpu::Regs& 
                     !RegionOver(base, size) && direct->EnsureImported(base, size)) {
                     // D3: read in place through the page table; nothing bound.
                     direct_entries[buffer_index] = {u32(base), u32(base >> 32), u32(size), 1u};
+                    if (desc.is_written) NoteGpuWrite(frame, base, size); // PERF-SGT-247
                     if (BindSplitDiagOn()) { // DIAG-SGT-003
                         NoteBindSplit(base, size, desc.is_written ? BindDirectWrite : BindDirectRead,
                                       frame, stage.pgm_hash);
                     }
-                    if (SnapshotBelow() >= 4_KB && stage.hw_stage == Shader::HwStage::Compute &&
+                    // PERF-SGT-247: GT7 (races too) when nothing wrote the prefix lately.
+                    const bool prefix_snapshot = SnapshotBelow() >= 4_KB ||
+                        (ComputePrefixSnapshotOn() && !desc.is_written &&
+                         stage.hw_stage == Shader::HwStage::Compute && size >= 4_KB &&
+                         desc.post_op == Shader::SharpFetchPostOp::ReadConstPointer &&
+                         !GpuWroteLately(frame, base, 4_KB));
+                    if (prefix_snapshot && stage.hw_stage == Shader::HwStage::Compute &&
                         size >= 4_KB &&
                         desc.post_op == Shader::SharpFetchPostOp::ReadConstPointer) {
                         constexpr u64 PrefixSize = 4_KB;
@@ -21695,6 +21768,7 @@ bool NativeRenderer::PrepareBuffers(const Shader::Info& stage, const AmdGpu::Reg
                     desc.IsDirectEligible() && size < (u64{1} << 32) && !region_over &&
                     direct->EnsureImported(base, size)) {
                     direct_entries[buffer_index] = {u32(base), u32(base >> 32), u32(size), 1u};
+                    if (desc.is_written) NoteGpuWrite(frame, base, size); // PERF-SGT-247
                 } else if (const auto found = JobGuestBuffer(base, size, desc.is_written, p)) {
                     const u64 aligned = Common::AlignDown(found->second, alignment);
                     const u64 adjust = found->second - aligned;
