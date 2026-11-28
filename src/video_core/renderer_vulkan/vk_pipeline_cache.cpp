@@ -10349,7 +10349,7 @@ static bool MatchesLastSpecialization(const Shader::StageSpecialization& stored,
                                       const Shader::Profile& profile, Shader::Backend::Bindings binding) {
     static const bool direct = [] {
         const char* value = std::getenv("SHADGT_VERTEX_MATCH"); // PERF-SGT-230
-        return value && std::strcmp(value, "1") == 0;
+        return !(value && std::strcmp(value, "0") == 0);
     }();
     if (direct && info.sw_stage == Shader::SwStage::Vertex && info.has_fetch_shader && info.images.empty() &&
         info.fmasks.empty() && info.samplers.empty()) {
@@ -10484,7 +10484,7 @@ PipelineCache::Result PipelineCache::GetProgramImpl(HwStage hw_stage, SwStage sw
     // permutations start after the stored ones, so their pipelines are new as well.
     static const bool reuse_fix_checks = [] {
         const char* setting = std::getenv("SHADGT_REUSE_SHADER_FIX_CHECKS"); // PERF-SGT-227
-        return setting && std::string_view(setting) == "1";
+        return !(setting && std::string_view(setting) == "0");
     }();
     const bool first_use = [&] {
         if (reuse_fix_checks && it_pgm.value()->use_checked) return false;
@@ -10696,7 +10696,7 @@ PipelineCache::Result PipelineCache::GetProgramImpl(HwStage hw_stage, SwStage sw
                 permutation.inputs.start == binding && permutation.inputs.runtime_info == runtime_info) {
                 static const bool compare_fragment_inputs = [] {
                     const char* setting = std::getenv("SHADGT_COMPARE_FRAGMENT_INPUTS"); // PERF-SGT-229
-                    return setting && std::string_view(setting) == "1";
+                    return !(setting && std::string_view(setting) == "0");
                 }();
                 if (compare_fragment_inputs && info.sw_stage == SwStage::Fragment) {
                     packed_match = Shader::StageSpecialization::MatchesFragmentInputs(

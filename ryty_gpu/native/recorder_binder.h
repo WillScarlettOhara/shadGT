@@ -169,7 +169,7 @@ private:
     Vulkan::CommandRing ring{[] {
         using Publication = Vulkan::CommandRing::Publication;
         const char* setting = std::getenv("SHADGT_BINDER_BATCH_PUBLISH"); // PERF-SGT-215
-        return setting && setting[0] == '1' && setting[1] == '\0'
+        return !(setting && setting[0] == '0' && setting[1] == '\0')
                    ? Publication::AtJobEnd
                    : Publication::PerCommand;
     }()};

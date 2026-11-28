@@ -22,7 +22,7 @@ class KeptTextureSet {
 public:
     KeptTextureSet() {
         const char* value = std::getenv("SHADGT_FLAT_KEPT_TEXTURES"); // PERF-SGT-225
-        if (value && value[0] == '1' && value[1] == '\0') {
+        if (!(value && value[0] == '0' && value[1] == '\0')) { // on unless exactly 0
             entries.emplace<Flat>();
         }
     }

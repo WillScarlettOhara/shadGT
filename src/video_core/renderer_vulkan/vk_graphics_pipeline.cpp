@@ -517,7 +517,7 @@ GraphicsPipeline::GraphicsPipeline(
 #ifdef RYTY_GPU
         static const bool group = [] {
             const char* env = std::getenv("SHADGT_GROUP_VERTEX_SHARPS"); // PERF-SGT-213
-            return env && std::string_view(env) == "1";
+            return !(env && std::string_view(env) == "0");
         }();
         group_vertex_sharps = group && ConsecutiveVertexSharps(fetch_shader);
 #endif

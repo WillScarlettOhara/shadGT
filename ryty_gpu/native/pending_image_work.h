@@ -12,7 +12,7 @@ class PendingImageWork {
 public:
     PendingImageWork() {
         const char* value = std::getenv("SHADGT_READ_EMPTY_IMAGE_QUEUES"); // PERF-SGT-223
-        enabled = value && value[0] == '1' && value[1] == '\0';
+        enabled = !(value && value[0] == '0' && value[1] == '\0');
     }
 
     void Publish(bool any) {

@@ -642,7 +642,7 @@ ImageEntry* ImageRegistry::Find(const VideoCore::ImageInfo& info, bool render_ta
         }
         static const bool depth_twin_hint = [] {
             const char* value = std::getenv("SHADGT_DEPTH_TWIN_HINT"); // PERF-SGT-216
-            return value && value[0] == '1' && value[1] == '\0';
+            return !(value && value[0] == '0' && value[1] == '\0');
         }();
         if (depth_twin_hint && render_target) {
             bool possible = false;
@@ -784,7 +784,7 @@ bool ImageRegistry::Untouched(u64 since, std::span<const std::pair<VAddr, VAddr>
     };
     static const bool single_range = [] {
         const char* value = std::getenv("SHADGT_SINGLE_IMAGE_HISTORY"); // PERF-SGT-222
-        return value && value[0] == '1' && value[1] == '\0';
+        return !(value && value[0] == '0' && value[1] == '\0');
     }();
     if (single_range && ranges.size() == 1) {
         const auto [begin, end] = ranges.front();
@@ -2947,7 +2947,7 @@ bool ImageRegistry::RecordDownload(Rhi::CommandList& list, ImageEntry& entry, co
         // Those bytes are inside the picture's own memory, which the write-back overwrites anyway.
         static const bool keep = [] {
             const char* env = std::getenv("SHADGT_WRITEBACK_KEEP_PADDING");
-            return env && env[0] == '1' && env[1] == 0;
+            return !(env && env[0] == '0' && env[1] == 0);
         }();
         if (keep && entry.download_padding && entry.download_padding->Size() >= size) {
             list.CopyBuffer(entry.download_padding.get(), 0, batch->scratch.get(), tiled_offset, size);

@@ -300,7 +300,7 @@ bool ParseFetchShader(const Shader::Info& info, FetchShaderData& out_fetch_data)
 #ifdef RYTY_GPU
     static const bool reuse = [] {
         const char* value = std::getenv("SHADGT_REUSE_FETCH_LAYOUT"); // PERF-SGT-220
-        const bool enabled = value && std::strcmp(value, "1") == 0;
+        const bool enabled = !(value && std::strcmp(value, "0") == 0);
         return enabled;
     }();
     if (reuse && !t_fetch_code_snapshots && !t_replay && !Common::t_guest_read_log) {

@@ -1780,7 +1780,7 @@ bool NativeModeRequested() {
 static bool SkipRedundantDescriptorWork() {
     static const bool enabled = [] {
         const char* value = std::getenv("SHADGT_DESCRIPTOR_KEY_WORK"); // PERF-SGT-218
-        return value && std::strcmp(value, "1") == 0;
+        return !(value && std::strcmp(value, "0") == 0);
     }();
     return enabled;
 }
@@ -2287,23 +2287,25 @@ static bool OutOfMemoryLogDue(std::atomic<u32>& logged) {
 
 static bool InPlaceStorageWritesRequested() {
     const char* value = std::getenv("SHADGT_IN_PLACE_STORAGE_WRITES"); // PERF-SGT-211
-    return value && std::strcmp(value, "1") == 0;
+    return !(value && std::strcmp(value, "0") == 0);
 }
 
 NativeRenderer::NativeRenderer(Rasterizer& rasterizer)
     : r{rasterizer}, in_place_storage_writes{InPlaceStorageWritesRequested()} {
     const char* dedup = std::getenv("SHADGT_DEDUP_DOWNLOAD_PAGES"); // PERF-SGT-231
-    dedup_download_pages = dedup && dedup[0] == '1' && dedup[1] == '\0';
+    dedup_download_pages = !(dedup && dedup[0] == '0' && dedup[1] == '\0');
+    copy_literal_samplers = true; // PERF-SGT-232: on unless exactly 0
     if (const char* value = std::getenv("SHADGT_COPY_LITERAL_SAMPLERS")) { // PERF-SGT-232
-        copy_literal_samplers = value[0] == '1' && value[1] == '\0';
+        copy_literal_samplers = !(value[0] == '0' && value[1] == '\0');
         LOG_INFO(Render_Vulkan, "Literal sampler copies {}", copy_literal_samplers);
     }
+    read_clean_sources = true; // PERF-SGT-233: on unless exactly 0
     if (const char* value = std::getenv("SHADGT_READ_CLEAN_SOURCES")) { // PERF-SGT-233
-        read_clean_sources = value[0] == '1' && value[1] == '\0';
+        read_clean_sources = !(value[0] == '0' && value[1] == '\0');
         LOG_INFO(Render_Vulkan, "Texture source refresh: {}", read_clean_sources ? "read first" : "stock");
     }
     const char* skip_upkeep = std::getenv("SHADGT_SKIP_EMPTY_DESCRIPTOR_UPKEEP"); // PERF-SGT-234
-    skip_empty_long_sets_upkeep = skip_upkeep && std::strcmp(skip_upkeep, "1") == 0;
+    skip_empty_long_sets_upkeep = !(skip_upkeep && std::strcmp(skip_upkeep, "0") == 0);
     DecideGtsCpuWritebackNow(); // FIX-GTS-529: before the game sets up its save memory
     SnapshotLease::BackingProtocol::Initialize(r.instance.GetVendorID());
     sampler_cache_epoch.fetch_add(1, std::memory_order_acq_rel);
@@ -5242,7 +5244,7 @@ void NativeRenderer::FlushWritebacks() {
     // re-tiling left them, not from guest memory right after they were written there.
     static const bool from_video = [] {
         const char* env = std::getenv("SHADGT_WRITEBACK_REGION_FROM_VIDEO");
-        return env && env[0] == '1' && env[1] == 0;
+        return !(env && env[0] == '0' && env[1] == 0);
     }();
     std::vector<DeferredCopies> deferred;
     std::vector<std::pair<VAddr, VAddr>> deferred_ranges;
@@ -7019,7 +7021,7 @@ void NativeRenderer::RecordRegionWriteback(const std::shared_ptr<WritebackPlan>&
     }
     static const bool combine_pages = [] {
         const char* env = std::getenv("SHADGT_COMBINE_WRITEBACK_PAGES"); // PERF-SGT-226
-        return env && env[0] == '1' && env[1] == '\0';
+        return !(env && env[0] == '0' && env[1] == '\0');
     }();
     for (size_t i = 0; i < plan.parts.size();) {
         auto& part = plan.parts[i];
@@ -7126,7 +7128,7 @@ void NativeRenderer::RefreshRegion(Region& region, VAddr address, u64 size) {
     };
     static const bool reuse_full_download = [] {
         const char* env = std::getenv("SHADGT_REUSE_FULL_DOWNLOAD"); // PERF-SGT-221
-        const bool enabled = env && std::strcmp(env, "1") == 0;
+        const bool enabled = !(env && std::strcmp(env, "0") == 0);
         return enabled;
     }();
     std::vector<RefreshPagePlan> refresh(pages.size());
